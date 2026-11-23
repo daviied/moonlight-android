@@ -20,4 +20,8 @@ public interface NvConnectionListener {
     void setMotionEventState(short controllerNumber, byte motionType, short reportRateHz);
 
     void setControllerLED(short controllerNumber, byte r, byte g, byte b);
+
+    // RD extension (called on a native thread)
+    default void rdSetCursorShape(int id, short width, short height, short hotX, short hotY, byte[] bgra) {}
+    default void rdSetCursorState(int id, boolean visible) {}
 }

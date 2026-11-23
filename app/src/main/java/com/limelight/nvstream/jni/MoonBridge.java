@@ -322,6 +322,26 @@ public class MoonBridge {
         }
     }
 
+    // RD extension: client-drawn cursor
+    public static void bridgeClRdSetCursorShape(int id, short width, short height, short hotX, short hotY, byte[] bgra) {
+        if (connectionListener != null) {
+            connectionListener.rdSetCursorShape(id, width, height, hotX, hotY, bgra);
+        }
+    }
+
+    public static void bridgeClRdSetCursorState(int id, boolean visible) {
+        if (connectionListener != null) {
+            connectionListener.rdSetCursorState(id, visible);
+        }
+    }
+
+    public static native void rdSetLocalCursorRequested(boolean requested);
+
+    public static native boolean rdIsLocalCursorActive();
+
+    // percent 0-100 or 255; flags: 1 discharging, 2 charging, 4 no battery; minutesLeft 0xFFFF unknown
+    public static native int rdSendBatteryStatus(int percent, int flags, int minutesLeft, String deviceName);
+
     public static void bridgeClSetControllerLED(short controllerNumber, byte r, byte g, byte b) {
         if (connectionListener != null) {
             connectionListener.setControllerLED(controllerNumber, r, g, b);

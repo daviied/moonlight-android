@@ -45,6 +45,11 @@ import android.app.Service;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.graphics.Bitmap;
+import android.os.BatteryManager;
+import android.view.PointerIcon;
+import java.util.HashMap;
 import android.content.ServiceConnection;
 import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
@@ -134,6 +139,20 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private int modifierFlags = 0;
     private boolean grabbedInput = true;
     private boolean cursorVisible = false;
+
+    // RD extension: client-drawn cursor + battery reporting
+    private final HashMap<Integer, Object> rdCursorIcons = new HashMap<>();
+    private int rdCursorId = 0;
+    private boolean rdHostCursorVisible = true;
+    private boolean rdLocalCursor = false;
+    private final Handler rdBatteryHandler = new Handler();
+    private final Runnable rdBatteryTask = new Runnable() {
+        @Override
+        public void run() {
+            rdSendBattery();
+            rdBatteryHandler.postDelayed(this, 60000);
+        }
+    };
     private boolean waitingForAllModifiersUp = false;
     private int specialKeyCode = KeyEvent.KEYCODE_UNKNOWN;
     private StreamView streamView;
@@ -482,6 +501,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 .build();
 
         // Initialize the connection
+        // RD: in remote-desktop mouse mode, ask the host to let us draw the cursor
+        MoonBridge.rdSetLocalCursorRequested(prefConfig.absoluteMouseMode);
+
         conn = new NvConnection(getApplicationContext(),
                 new ComputerDetails.AddressTuple(host, port),
                 httpsPort, uniqueId, config,
@@ -1157,6 +1179,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             if (cursorVisible) {
                 inputCaptureProvider.showCursor();
             }
+            rdApplyCursor();
         }
         else {
             inputCaptureProvider.disableCapture();
@@ -2226,6 +2249,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void stopConnection() {
+        rdBatteryHandler.removeCallbacks(rdBatteryTask);
         if (connecting || connected) {
             connecting = connected = false;
             updatePipAutoEnter();
@@ -2431,6 +2455,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 // Keep the display on
                 getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
+                // RD: client-drawn cursor and battery reporting
+                rdLocalCursor = MoonBridge.rdIsLocalCursorActive();
+                rdBatteryHandler.removeCallbacks(rdBatteryTask);
+                rdBatteryHandler.postDelayed(rdBatteryTask, 2000);
+
                 // Update GameManager state to indicate we're in game
                 UiHelper.notifyStreamConnected(Game.this);
 
@@ -2500,6 +2529,95 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     public void setControllerLED(short controllerNumber, byte r, byte g, byte b) {
         controllerHandler.handleSetControllerLED(controllerNumber, r, g, b);
+    }
+
+    // ---------------- RD extension ----------------
+
+    @Override
+    public void rdSetCursorShape(final int id, final short width, final short height, final short hotX, final short hotY, final byte[] bgra) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            return;
+        }
+        int w = width & 0xFFFF, h = height & 0xFFFF;
+        int[] argb = new int[w * h];
+        for (int i = 0; i < argb.length; i++) {
+            int b = bgra[i * 4] & 0xFF, g = bgra[i * 4 + 1] & 0xFF, r = bgra[i * 4 + 2] & 0xFF, a = bgra[i * 4 + 3] & 0xFF;
+            argb[i] = (a << 24) | (r << 16) | (g << 8) | b;
+        }
+        final Bitmap bitmap = Bitmap.createBitmap(argb, w, h, Bitmap.Config.ARGB_8888);
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                // Scale host pixels to screen pixels like the video
+                float scale = streamView != null && streamView.getWidth() > 0 ? (float) streamView.getWidth() / prefConfig.width : 1.0f;
+                int sw = Math.max(1, Math.round(bitmap.getWidth() * scale));
+                int sh = Math.max(1, Math.round(bitmap.getHeight() * scale));
+                Bitmap scaled = (sw == bitmap.getWidth() && sh == bitmap.getHeight()) ? bitmap : Bitmap.createScaledBitmap(bitmap, sw, sh, true);
+                float hx = Math.min(sw - 1, (hotX & 0xFFFF) * scale);
+                float hy = Math.min(sh - 1, (hotY & 0xFFFF) * scale);
+                if (rdCursorIcons.size() > 64) {
+                    rdCursorIcons.clear();
+                }
+                rdCursorIcons.put(id, PointerIcon.create(scaled, hx, hy));
+                rdCursorId = id;
+                rdApplyCursor();
+            }
+        });
+    }
+
+    @Override
+    public void rdSetCursorState(final int id, final boolean visible) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (id != 0) {
+                    rdCursorId = id;
+                }
+                rdHostCursorVisible = visible;
+                rdApplyCursor();
+            }
+        });
+    }
+
+    private void rdApplyCursor() {
+        if (!rdLocalCursor || streamView == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            return;
+        }
+        Object icon = rdCursorIcons.get(rdCursorId);
+        if (rdHostCursorVisible && icon != null) {
+            streamView.setPointerIcon((PointerIcon) icon);
+        }
+        else {
+            streamView.setPointerIcon(PointerIcon.getSystemIcon(this, PointerIcon.TYPE_NULL));
+        }
+    }
+
+    private void rdSendBattery() {
+        Intent status = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        int percent = 255;
+        int flags = 0;
+        if (status != null) {
+            int level = status.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+            int scale = status.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+            if (level >= 0 && scale > 0) {
+                percent = Math.round(level * 100f / scale);
+            }
+            if (!status.getBooleanExtra(BatteryManager.EXTRA_PRESENT, true)) {
+                flags = 4;
+            }
+            else {
+                int st = status.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+                if (st == BatteryManager.BATTERY_STATUS_CHARGING) flags = 2;
+                else if (st == BatteryManager.BATTERY_STATUS_DISCHARGING || st == BatteryManager.BATTERY_STATUS_NOT_CHARGING) flags = 1;
+            }
+        }
+        int minutes = 0xFFFF;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && (flags & 2) != 0) {
+            BatteryManager bm = (BatteryManager) getSystemService(BATTERY_SERVICE);
+            long ms = bm != null ? bm.computeChargeTimeRemaining() : -1;
+            if (ms > 0) minutes = (int) Math.min(0xFFFE, ms / 60000);
+        }
+        MoonBridge.rdSendBatteryStatus(percent, flags, minutes, Build.MODEL);
     }
 
     @Override

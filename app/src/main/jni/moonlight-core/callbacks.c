@@ -38,6 +38,8 @@ static jmethodID BridgeClSetHdrModeMethod;
 static jmethodID BridgeClRumbleTriggersMethod;
 static jmethodID BridgeClSetMotionEventStateMethod;
 static jmethodID BridgeClSetControllerLEDMethod;
+static jmethodID BridgeClRdSetCursorShapeMethod;
+static jmethodID BridgeClRdSetCursorStateMethod;
 static jbyteArray DecodedFrameBuffer;
 static jshortArray DecodedAudioBuffer;
 
@@ -102,6 +104,8 @@ Java_com_limelight_nvstream_jni_MoonBridge_init(JNIEnv *env, jclass clazz) {
     BridgeClRumbleTriggersMethod = (*env)->GetStaticMethodID(env, clazz, "bridgeClRumbleTriggers", "(SSS)V");
     BridgeClSetMotionEventStateMethod = (*env)->GetStaticMethodID(env, clazz, "bridgeClSetMotionEventState", "(SBS)V");
     BridgeClSetControllerLEDMethod = (*env)->GetStaticMethodID(env, clazz, "bridgeClSetControllerLED", "(SBBB)V");
+    BridgeClRdSetCursorShapeMethod = (*env)->GetStaticMethodID(env, clazz, "bridgeClRdSetCursorShape", "(ISSSS[B)V");
+    BridgeClRdSetCursorStateMethod = (*env)->GetStaticMethodID(env, clazz, "bridgeClRdSetCursorState", "(IZ)V");
 }
 
 int BridgeDrSetup(int videoFormat, int width, int height, int redrawRate, void* context, int drFlags) {
@@ -389,6 +393,53 @@ void BridgeClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, u
     }
 }
 
+// RD extension: client-drawn cursor
+void BridgeClRdSetCursorShape(uint32_t id, uint16_t width, uint16_t height, uint16_t hotX, uint16_t hotY, const uint8_t* bgra) {
+    JNIEnv* env = GetThreadEnv();
+    jsize len = (jsize)width * height * 4;
+    jbyteArray data = (*env)->NewByteArray(env, len);
+    if (data == NULL) {
+        return;
+    }
+    (*env)->SetByteArrayRegion(env, data, 0, len, (const jbyte*)bgra);
+    (*env)->CallStaticVoidMethod(env, GlobalBridgeClass, BridgeClRdSetCursorShapeMethod, (jint)id,
+                                 (jshort)width, (jshort)height, (jshort)hotX, (jshort)hotY, data);
+    (*env)->DeleteLocalRef(env, data);
+    if ((*env)->ExceptionCheck(env)) {
+        // We will crash here
+        (*JVM)->DetachCurrentThread(JVM);
+    }
+}
+
+void BridgeClRdSetCursorState(uint32_t id, bool visible) {
+    JNIEnv* env = GetThreadEnv();
+    (*env)->CallStaticVoidMethod(env, GlobalBridgeClass, BridgeClRdSetCursorStateMethod, (jint)id, (jboolean)visible);
+    if ((*env)->ExceptionCheck(env)) {
+        // We will crash here
+        (*JVM)->DetachCurrentThread(JVM);
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_com_limelight_nvstream_jni_MoonBridge_rdSetLocalCursorRequested(JNIEnv *env, jclass clazz, jboolean requested) {
+    LiRdSetLocalCursorRequested(requested);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_limelight_nvstream_jni_MoonBridge_rdIsLocalCursorActive(JNIEnv *env, jclass clazz) {
+    return LiRdIsLocalCursorActive();
+}
+
+JNIEXPORT jint JNICALL
+Java_com_limelight_nvstream_jni_MoonBridge_rdSendBatteryStatus(JNIEnv *env, jclass clazz, jint percent, jint flags, jint minutesLeft, jstring deviceName) {
+    const char* name = deviceName ? (*env)->GetStringUTFChars(env, deviceName, NULL) : NULL;
+    int ret = LiRdSendBatteryStatus((uint8_t)percent, (uint8_t)flags, (uint16_t)minutesLeft, name);
+    if (name) {
+        (*env)->ReleaseStringUTFChars(env, deviceName, name);
+    }
+    return ret;
+}
+
 void BridgeClLogMessage(const char* format, ...) {
     va_list va;
     va_start(va, format);
@@ -426,6 +477,8 @@ static CONNECTION_LISTENER_CALLBACKS BridgeConnListenerCallbacks = {
         .rumbleTriggers = BridgeClRumbleTriggers,
         .setMotionEventState = BridgeClSetMotionEventState,
         .setControllerLED = BridgeClSetControllerLED,
+        .rdSetCursorShape = BridgeClRdSetCursorShape,
+        .rdSetCursorState = BridgeClRdSetCursorState,
 };
 
 static bool
