@@ -1,0 +1,28 @@
+# Copied into the moonlight-android fork as .github/workflows/rd-android.yml by setup-forks.ps1
+name: RD Android build
+on:
+  push:
+    branches: [rd]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      # The runner image already has the Android SDK + licenses (setup-android@v3 breaks on new images)
+      - name: Build APK (debug-signed, installable)
+        run: ./gradlew --no-daemon assembleNonRootDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rd-android-apk
+          path: app/build/outputs/apk/nonRoot/debug/*.apk
